@@ -74,11 +74,13 @@ jobs:
           OSM_ZMIN: "6"
           OSM_ZMAX: "11"
           OSM_BBOX: "-83.7,36.5,-74.9,40.7"
+          OSM_DELAY: "0.05"   # polite but quicker than the 0.2s default
         run: |
           if [ -z "$TILE_URL_TEMPLATE" ]; then
             echo "TILE_URL_TEMPLATE secret not set - skipping detailed OSM tiles."
           else
-            python3 firmware/tools/generate_osm_tiles.py \
+            # -u = unbuffered, so tile progress shows live in the log
+            python3 -u firmware/tools/generate_osm_tiles.py \
               --out sdcard/OSM --bbox "$OSM_BBOX" --zmin "$OSM_ZMIN" --zmax "$OSM_ZMAX"
           fi
 
