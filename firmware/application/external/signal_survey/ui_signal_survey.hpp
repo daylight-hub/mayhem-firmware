@@ -86,6 +86,7 @@ struct SurveyRange {
 struct SurveyResult {
     int64_t frequency_hz;
     int16_t power_db;        // best power seen (peak bin, dB code)
+    uint8_t noise_floor;     // local noise floor (dB code) at detection
     uint16_t persistence;    // number of sweeps this signal was seen in
     int64_t bandwidth_hz;    // estimated occupied bandwidth
     int32_t score;           // ranking score (integer)

@@ -314,6 +314,7 @@ void SignalSurveyView::record_detection(int64_t freq_hz, const SpectrumFeatures&
             if (r.persistence < 0xFFFF) r.persistence++;
             if (r.mod == SurveyMod::Unknown) r.mod = mod;  // upgrade if we learn more
             r.bandwidth_hz = f.occupied_bw_hz;
+            r.noise_floor = f.noise_floor;
             r.occupancy_mask |= 1u;  // active this pass
             return;
         }
@@ -324,6 +325,7 @@ void SignalSurveyView::record_detection(int64_t freq_hz, const SpectrumFeatures&
             r.used = true;
             r.frequency_hz = freq_hz;
             r.power_db = power;
+            r.noise_floor = f.noise_floor;
             r.persistence = 1;
             r.bandwidth_hz = f.occupied_bw_hz;
             r.mod = mod;
@@ -338,6 +340,7 @@ void SignalSurveyView::record_detection(int64_t freq_hz, const SpectrumFeatures&
     if (power > weakest->power_db) {
         weakest->frequency_hz = freq_hz;
         weakest->power_db = power;
+        weakest->noise_floor = f.noise_floor;
         weakest->persistence = 1;
         weakest->bandwidth_hz = f.occupied_bw_hz;
         weakest->mod = mod;
@@ -474,7 +477,7 @@ void SignalSurveyView::select_frequency(int64_t freq_hz) {
 uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_only) {
     create_freqman_file(stem);
 
-    freqman_db db;
+    FreqmanDB db;
     if (!db.open(freqman_dir / (stem + ".TXT"), /*create=*/true))
         return 0;
 
@@ -486,10 +489,13 @@ uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_o
         freqman_entry e{};
         e.type = freqman_type::Single;
         e.frequency_a = r.frequency_hz;
+        // Store the full capture data for each hit: modulation, signal power,
+        // noise floor, and occupied bandwidth.
         e.description =
-            std::string(mod_name(r.mod)) + " " +
-            to_string_dec_int(r.power_db) + " bw" +
-            to_string_dec_uint((uint32_t)(r.bandwidth_hz / 1000)) + "k";
+            std::string(mod_name(r.mod)) +
+            " p" + to_string_dec_int(r.power_db) +
+            " nf" + to_string_dec_uint(r.noise_floor) +
+            " bw" + to_string_dec_uint((uint32_t)(r.bandwidth_hz / 1000)) + "k";
         db.append_entry(e);
         written++;
     }
