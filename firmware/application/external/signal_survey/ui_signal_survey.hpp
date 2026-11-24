@@ -136,6 +136,13 @@ class SignalSurveyView : public View {
     int64_t cur_freq_ = 0;
     uint32_t sweep_count_ = 0;
 
+    // individual frequencies scanned in addition to the ranges
+    static constexpr size_t kMaxSingles = 8;
+    int64_t single_freqs_[kMaxSingles]{};
+    size_t single_count_ = 0;
+    bool in_singles_ = false;   // true while sweeping the single-freq list
+    size_t single_idx_ = 0;
+
     // per-channel FFT accumulation (integer; averaged over frames_per_ch_)
     uint32_t accum_[kSpecBins]{};
     uint32_t accum_sr_ = 0;
@@ -154,6 +161,7 @@ class SignalSurveyView : public View {
     void configure_radio();
     void retune(int64_t freq_hz);
     void select_frequency(int64_t freq_hz);  // park receiver on a tapped row
+    void add_single_frequency(int64_t freq_hz);  // add a manual watch frequency
 
     // ---- spectrum intake + DSP ----
     void drain_spectrum();
@@ -186,11 +194,16 @@ class SignalSurveyView : public View {
     Button button_stop_{{8 * 8, 2 * 16, 7 * 8, 2 * 16}, "Stop"};
     Button button_save_{{16 * 8, 2 * 16, 13 * 8, 2 * 16}, "Save FreqMan"};
 
+    // Manual watch-frequency entry: scanned in addition to the ranges.
+    FrequencyField field_add_freq_{{0 * 8, 4 * 16}};
+    Button button_add_freq_{{12 * 8, 4 * 16, 6 * 8, 16}, "Add"};
+    Button button_clear_freq_{{19 * 8, 4 * 16, 6 * 8, 16}, "Clr"};
+
     // Scrollable, tappable results list. Hop pairs are listed first (tagged
     // HOP), then ranked signals. Selecting a row parks the receiver on that
     // frequency. The menu is rebuilt at sweep boundaries, not every frame.
     MenuView menu_view_{
-        {0, 4 * 16, screen_width, screen_height - (4 * 16)},
+        {0, 5 * 16, screen_width, screen_height - (5 * 16)},
         true /* keep_highlight */};
 
     app_settings::SettingsManager settings_{

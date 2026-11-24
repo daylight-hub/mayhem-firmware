@@ -46,6 +46,7 @@ SignalSurveyView::SignalSurveyView(NavigationView& nav)
     add_children({
         &labels_, &field_lna_, &field_vga_, &field_rf_amp_, &field_threshold_,
         &text_status_, &button_start_, &button_stop_, &button_save_,
+        &field_add_freq_, &button_add_freq_, &button_clear_freq_,
         &menu_view_,
     });
 
@@ -55,6 +56,15 @@ SignalSurveyView::SignalSurveyView(NavigationView& nav)
     button_start_.on_select = [this](Button&) { start_scan(); };
     button_stop_.on_select = [this](Button&) { stop_scan(); };
     button_save_.on_select = [this](Button&) { save_results(); };
+
+    field_add_freq_.set_value(433'000'000);
+    button_add_freq_.on_select = [this](Button&) {
+        add_single_frequency(field_add_freq_.value());
+    };
+    button_clear_freq_.on_select = [this](Button&) {
+        single_count_ = 0;
+        text_status_.set("Watch freqs cleared");
+    };
 
     configure_radio();
     refresh_list();
@@ -103,17 +113,26 @@ void SignalSurveyView::start_scan() {
     for (auto& r : results_) r = SurveyResult{};
     for (auto& p : pairs_) p = HopPair{};
     sweep_count_ = 0;
+    in_singles_ = false;
+    single_idx_ = 0;
     range_idx_ = 0;
     while (range_idx_ < 3 && !ranges_[range_idx_].enabled) range_idx_++;
-    if (range_idx_ >= 3) {
-        text_status_.set("No ranges enabled");
+    const bool have_ranges = (range_idx_ < 3);
+
+    if (!have_ranges && single_count_ == 0) {
+        text_status_.set("No ranges or watch freqs");
         return;
     }
 
     scanning_ = true;
     receiver_model.enable();
     baseband::spectrum_streaming_start();
-    retune(ranges_[range_idx_].start_hz);
+    if (have_ranges) {
+        retune(ranges_[range_idx_].start_hz);
+    } else {
+        in_singles_ = true;  // watch-frequency-only scan
+        retune(single_freqs_[0]);
+    }
     text_status_.set("Scanning...");
 }
 
@@ -167,6 +186,17 @@ void SignalSurveyView::finish_channel() {
 }
 
 void SignalSurveyView::advance_channel() {
+    // Watch-frequency phase: step through the manual list, then end the sweep.
+    if (in_singles_) {
+        single_idx_++;
+        if (single_idx_ >= single_count_) {
+            finish_sweep();
+            return;
+        }
+        retune(single_freqs_[single_idx_]);
+        return;
+    }
+
     SurveyRange& range = ranges_[range_idx_];
     int64_t next = cur_freq_ + range.step_hz;
 
@@ -176,6 +206,13 @@ void SignalSurveyView::advance_channel() {
         } while (range_idx_ < 3 && !ranges_[range_idx_].enabled);
 
         if (range_idx_ >= 3) {
+            // ranges done -> sweep the watch frequencies, or finish
+            if (single_count_ > 0) {
+                in_singles_ = true;
+                single_idx_ = 0;
+                retune(single_freqs_[0]);
+                return;
+            }
             finish_sweep();
             return;
         }
@@ -198,9 +235,18 @@ void SignalSurveyView::finish_sweep() {
 
     // begin a new pass: shift occupancy history left, then restart sweep
     mark_pass_occupancy();
+    in_singles_ = false;
+    single_idx_ = 0;
     range_idx_ = 0;
     while (range_idx_ < 3 && !ranges_[range_idx_].enabled) range_idx_++;
-    retune(ranges_[range_idx_].start_hz);
+    if (range_idx_ < 3) {
+        retune(ranges_[range_idx_].start_hz);
+    } else if (single_count_ > 0) {
+        in_singles_ = true;  // watch-frequency-only scan
+        retune(single_freqs_[0]);
+    } else {
+        stop_scan();
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -465,6 +511,17 @@ void SignalSurveyView::select_frequency(int64_t freq_hz) {
     if (scanning_) stop_scan();
     receiver_model.set_target_frequency(freq_hz);
     text_status_.set("Parked " + to_string_short_freq(freq_hz) + " MHz");
+}
+
+// Add a manual watch frequency; these are swept in addition to the ranges.
+void SignalSurveyView::add_single_frequency(int64_t freq_hz) {
+    if (single_count_ >= kMaxSingles) {
+        text_status_.set("Watch list full");
+        return;
+    }
+    single_freqs_[single_count_++] = freq_hz;
+    text_status_.set("Watch " + to_string_short_freq(freq_hz) + " (" +
+                     to_string_dec_uint((uint32_t)single_count_) + ")");
 }
 
 /* ------------------------------------------------------------------ */
