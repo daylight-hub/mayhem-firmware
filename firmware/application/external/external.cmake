@@ -245,6 +245,10 @@ set(EXTCPPSRC
 	external/level/main.cpp
 	external/level/ui_level.cpp
 
+	#signal_survey - receive-only band scanner
+	external/signal_survey/main.cpp
+	external/signal_survey/ui_signal_survey.cpp
+
 	#gfxEQ 80 byte
 	external/gfxeq/main.cpp
 	external/gfxeq/ui_gfxeq.cpp	
@@ -502,6 +506,7 @@ set(EXTAPPLIST
 	lcd_gamma
 	scanner
 	level
+	signal_survey
 	gfxeq
 	waterfall_designer
 	detector_rx
