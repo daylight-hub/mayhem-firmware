@@ -59,6 +59,23 @@ jobs:
           sudo apt-get update && sudo apt-get install -y python3-pil
           python3 firmware/tools/generate_world_map_2048.bin.py sdcard/ADSB/world_map.jpg sdcard/ADSB/world_map_2048.bin
 
+      # Detailed /OSM tiles (VA/MD/DC/WV by default). Opt-in: runs only when the
+      # TILE_URL_TEMPLATE repo secret is set to a provider that allows bulk tiles
+      # (NOT tile.openstreetmap.org). Tune the region/zoom with the OSM_* vars.
+      - name: Build detailed OSM tiles (optional)
+        env:
+          TILE_URL_TEMPLATE: ${{ secrets.TILE_URL_TEMPLATE }}
+          OSM_ZMIN: "6"
+          OSM_ZMAX: "11"
+          OSM_BBOX: "-83.7,36.5,-74.9,40.7"
+        run: |
+          if [ -z "$TILE_URL_TEMPLATE" ]; then
+            echo "TILE_URL_TEMPLATE secret not set - skipping detailed OSM tiles."
+          else
+            python3 firmware/tools/generate_osm_tiles.py \
+              --out sdcard/OSM --bbox "$OSM_BBOX" --zmin "$OSM_ZMIN" --zmax "$OSM_ZMAX"
+          fi
+
       - name: Create SD-card ZIP (firmware + APPS + maps)
         run: |
           mkdir -p sdcard/FIRMWARE sdcard/APPS
