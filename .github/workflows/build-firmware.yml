@@ -17,6 +17,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     name: build (HackRF)
+    permissions:
+      contents: write   # needed to create the draft release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,3 +98,24 @@ jobs:
         with:
           name: sdcard-hackrf
           path: ./sdcard.zip
+
+      # Also publish a DRAFT release with the same files attached. Draft =
+      # visible only to you until you hit publish; nothing goes public
+      # automatically. Each run makes its own draft (tagged by run number).
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Signal Survey build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          draft: true
+          body: |
+            Automated personal build of the Signal Survey firmware (HackRF One / PortaPack).
+
+            - `firmware.zip` - flash the `.bin` with mayhem_flasher.bat.
+            - `sdcard.zip` - unzip onto a FAT32 card (firmware + APPS + maps).
+
+            Untested on hardware; build and bench-test before relying on it.
+          files: |
+            firmware.zip
+            sdcard.zip
