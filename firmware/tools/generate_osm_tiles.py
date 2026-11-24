@@ -26,10 +26,16 @@ import argparse
 import io
 import math
 import os
+import re
 import sys
 import time
 import urllib.request
 import urllib.error
+
+
+def redact(url):
+    """Hide the API key so it never lands in logs."""
+    return re.sub(r'((?:key|apikey|api_key)=)[^&\s]+', r'\1REDACTED', url, flags=re.I)
 
 try:
     from PIL import Image
@@ -65,17 +71,24 @@ def count_tiles(bbox, zmin, zmax):
     return total
 
 
-def fetch(url, user_agent, timeout, retries):
+def fetch(url, user_agent, timeout, retries, referer):
     last = None
+    headers = {"User-Agent": user_agent}
+    if referer:
+        # Some providers restrict a key to specific HTTP origins; sending a
+        # matching Referer makes a server-side request look allowed.
+        headers["Referer"] = referer
+        headers["Origin"] = referer
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
             last = e
             time.sleep(1.5 * (attempt + 1))  # backoff
-    raise RuntimeError(f"failed after {retries} tries: {url} ({last})")
+    # NB: redact() keeps the API key out of the log.
+    raise RuntimeError(f"failed after {retries} tries: {redact(url)} ({last})")
 
 
 def main():
@@ -100,6 +113,9 @@ def main():
     ap.add_argument("--user-agent",
                     default=os.environ.get("OSM_USER_AGENT",
                                            "portapack-mayhem-osm-tiler/1.0 (personal build)"))
+    ap.add_argument("--referer", default=os.environ.get("TILE_REFERER", ""),
+                    help="Referer/Origin to send. Set this to an origin your key "
+                         "allows if the provider restricts the key to HTTP origins.")
     args = ap.parse_args()
 
     if not args.url:
@@ -130,7 +146,7 @@ def main():
                     continue
                 url = args.url.format(z=z, x=x, y=y)
                 try:
-                    data = fetch(url, args.user_agent, args.timeout, args.retries)
+                    data = fetch(url, args.user_agent, args.timeout, args.retries, args.referer)
                     img = Image.open(io.BytesIO(data)).convert("RGB")  # 24-bit
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
                     img.save(out_path, format="BMP")
