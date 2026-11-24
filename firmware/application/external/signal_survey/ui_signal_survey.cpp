@@ -47,8 +47,16 @@ SignalSurveyView::SignalSurveyView(NavigationView& nav)
         &labels_, &field_lna_, &field_vga_, &field_rf_amp_, &field_threshold_,
         &text_status_, &button_start_, &button_stop_, &button_save_,
         &field_add_freq_, &button_add_freq_, &button_clear_freq_,
+        &labels_blocks_, &field_block_count_, &field_block_spread_, &field_block_gap_,
         &menu_view_,
     });
+
+    field_block_count_.set_value(block_count_);
+    field_block_count_.on_change = [this](int32_t v) { block_count_ = v; on_block_setting(); };
+    field_block_spread_.set_value(block_spread_hz_);
+    field_block_spread_.on_change = [this](int32_t v) { block_spread_hz_ = v; on_block_setting(); };
+    field_block_gap_.set_value(block_gap_khz_);
+    field_block_gap_.on_change = [this](int32_t v) { block_gap_khz_ = v; on_block_setting(); };
 
     field_threshold_.set_value(threshold_db_);
     field_threshold_.on_change = [this](int32_t v) { threshold_db_ = v; };
@@ -112,6 +120,8 @@ void SignalSurveyView::start_scan() {
 
     for (auto& r : results_) r = SurveyResult{};
     for (auto& p : pairs_) p = HopPair{};
+    for (auto& b : blocks_) b = SurveyBlock{};
+    block_total_ = 0;
     sweep_count_ = 0;
     in_singles_ = false;
     single_idx_ = 0;
@@ -142,6 +152,7 @@ void SignalSurveyView::stop_scan() {
     baseband::spectrum_streaming_stop();
     receiver_model.disable();
     rank_results();
+    build_blocks();
     if (detect_hops_) correlate_pairs();
     refresh_list();
     text_status_.set("Stopped (" + to_string_dec_uint(sweep_count_) + " sweeps)");
@@ -224,6 +235,7 @@ void SignalSurveyView::advance_channel() {
 void SignalSurveyView::finish_sweep() {
     sweep_count_++;
     rank_results();
+    build_blocks();
     if (detect_hops_) correlate_pairs();
     refresh_list();
 
@@ -464,6 +476,103 @@ void SignalSurveyView::correlate_pairs() {
 }
 
 /* ------------------------------------------------------------------ */
+/* blocks                                                              */
+/* ------------------------------------------------------------------ */
+
+// "462.550"
+static std::string block_mhz(int64_t f) {
+    return to_string_dec_uint((uint32_t)(f / 1'000'000)) + "." +
+           to_string_dec_uint((uint32_t)((f / 1000) % 1000), 3, '0');
+}
+
+// Arrange the hits into blocks of one modulation whose hits are at most
+// block_gap apart. Each block is anchored on the best-ranked hit not placed
+// yet and takes the window [lo, lo + gap] around it that holds the most
+// same-modulation hits (stronger hits break ties). Unknowns are not blocked.
+void SignalSurveyView::build_blocks() {
+    for (auto& b : blocks_) b = SurveyBlock{};
+    for (auto& r : results_) r.block = -1;
+    block_total_ = 0;
+
+    const int64_t gap = (int64_t)block_gap_khz_ * 1000;
+    const int64_t half_spread = block_spread_hz_ / 2;
+    const size_t max_blocks = block_count_ < 1 ? 1 : (block_count_ > (int32_t)kMaxBlocks ? kMaxBlocks : (size_t)block_count_);
+
+    auto placeable = [](const SurveyResult& r) {
+        return r.used && r.block < 0 && r.mod != SurveyMod::Unknown;
+    };
+
+    while (block_total_ < max_blocks) {
+        // Anchor: best-ranked hit still free.
+        int32_t anchor = -1;
+        for (size_t i = 0; i < kMaxResults; i++)
+            if (placeable(results_[i]) && (anchor < 0 || results_[i].score > results_[anchor].score))
+                anchor = (int32_t)i;
+        if (anchor < 0) break;
+
+        const SurveyMod mod = results_[anchor].mod;
+        const int64_t fa = results_[anchor].frequency_hz;
+
+        // Windows holding the anchor start at a same-modulation hit within gap below it.
+        int64_t best_lo = fa;
+        int32_t best_weight = -1;
+        for (const auto& c : results_) {
+            if (!placeable(c) || c.mod != mod || c.frequency_hz > fa || fa - c.frequency_hz > gap) continue;
+            int32_t weight = 0;
+            for (const auto& m : results_)
+                if (placeable(m) && m.mod == mod && m.frequency_hz >= c.frequency_hz && m.frequency_hz - c.frequency_hz <= gap)
+                    weight += 1000 + m.power_db;
+            if (weight > best_weight) {
+                best_weight = weight;
+                best_lo = c.frequency_hz;
+            }
+        }
+
+        SurveyBlock& b = blocks_[block_total_];
+        b.used = true;
+        b.mod = mod;
+        b.f_min = fa;
+        b.f_max = fa;
+        b.best_power = -32000;
+        for (auto& m : results_) {
+            if (!placeable(m) || m.mod != mod || m.frequency_hz < best_lo || m.frequency_hz - best_lo > gap) continue;
+            m.block = (int8_t)block_total_;
+            b.count++;
+            if (m.frequency_hz < b.f_min) b.f_min = m.frequency_hz;
+            if (m.frequency_hz > b.f_max) b.f_max = m.frequency_hz;
+            if (m.power_db > b.best_power) b.best_power = m.power_db;
+        }
+        b.range_lo = b.f_min > half_spread ? b.f_min - half_spread : 0;
+        b.range_hi = b.f_max + half_spread;
+        block_total_++;
+    }
+}
+
+void SignalSurveyView::on_block_setting() {
+    build_blocks();
+    refresh_list();
+}
+
+void SignalSurveyView::show_block(size_t index) {
+    if (index >= block_total_) return;
+    const SurveyBlock& b = blocks_[index];
+    std::string msg = std::string(mod_name(b.mod)) + ", " + to_string_dec_uint(b.count) + " hits\n" +
+                      block_mhz(b.range_lo) + "-" + block_mhz(b.range_hi) + " MHz\n" +
+                      "Spread " + to_string_dec_uint(block_spread_hz_) + " Hz\n";
+    size_t listed = 0;
+    for (const auto& r : results_) {
+        if (!r.used || r.block != (int8_t)index) continue;
+        if (++listed > 8) {
+            msg += "...";
+            break;
+        }
+        msg += to_string_short_freq(r.frequency_hz) + " p" + to_string_dec_int(r.power_db) +
+               " nf" + to_string_dec_uint(r.noise_floor) + "\n";
+    }
+    nav_.display_modal("Block " + to_string_dec_uint(index + 1), msg);
+}
+
+/* ------------------------------------------------------------------ */
 /* display                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -484,6 +593,17 @@ void SignalSurveyView::refresh_list() {
              [this, fa](KeyEvent) { this->select_frequency(fa); }});
     }
 
+    for (size_t i = 0; i < block_total_; i++) {
+        const SurveyBlock& b = blocks_[i];
+        menu_view_.add_item(
+            {"B" + to_string_dec_uint(i + 1) + " " + mod_name(b.mod) + " x" +
+                 to_string_dec_uint(b.count) + " " + block_mhz(b.range_lo) + "-" +
+                 block_mhz(b.range_hi),
+             Theme::getInstance()->fg_yellow->foreground,
+             nullptr,
+             [this, i](KeyEvent) { this->show_block(i); }});
+    }
+
     for (const auto& r : results_) {
         if (!r.used) continue;
         const int64_t f = r.frequency_hz;
@@ -491,7 +611,8 @@ void SignalSurveyView::refresh_list() {
             {to_string_short_freq(f) + " " + mod_name(r.mod) + " " +
                  to_string_dec_int(r.power_db) + " " +
                  to_string_dec_uint((uint32_t)(r.bandwidth_hz / 1000)) + "k x" +
-                 to_string_dec_uint(r.persistence),
+                 to_string_dec_uint(r.persistence) +
+                 (r.block >= 0 ? " B" + to_string_dec_uint(r.block + 1) : std::string{}),
              r.mod == SurveyMod::Unknown
                  ? Theme::getInstance()->fg_light->foreground
                  : Theme::getInstance()->fg_green->foreground,
@@ -531,7 +652,7 @@ void SignalSurveyView::add_single_frequency(int64_t freq_hz) {
 // NOTE: confirm the persistence call against firmware/common/freqman_db.cpp
 // on your checkout -- some revisions flush on close(), others need an
 // explicit save. The structure below targets the open/append/close API.
-uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_only) {
+uint32_t SignalSurveyView::write_freqman(const std::string& stem, ExportFilter filter) {
     create_freqman_file(stem);
 
     FreqmanDB db;
@@ -541,7 +662,8 @@ uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_o
     uint32_t written = 0;
     for (const auto& r : results_) {
         if (!r.used) continue;
-        if (unknown_only && r.mod != SurveyMod::Unknown) continue;
+        if (filter == ExportFilter::Unknown && r.mod != SurveyMod::Unknown) continue;
+        if (filter == ExportFilter::FM && r.mod != SurveyMod::NFM && r.mod != SurveyMod::WFM) continue;
 
         freqman_entry e{};
         e.type = freqman_type::Single;
@@ -552,7 +674,62 @@ uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_o
             std::string(mod_name(r.mod)) +
             " p" + to_string_dec_int(r.power_db) +
             " nf" + to_string_dec_uint(r.noise_floor) +
-            " bw" + to_string_dec_uint((uint32_t)(r.bandwidth_hz / 1000)) + "k";
+            " bw" + to_string_dec_uint((uint32_t)(r.bandwidth_hz / 1000)) + "k" +
+            (r.block >= 0 ? " B" + to_string_dec_uint(r.block + 1) : std::string{});
+        db.append_entry(e);
+        written++;
+    }
+    db.close();
+    return written;
+}
+
+// Each block as a FreqMan range: modulation, bandwidth and channel step from
+// block_spread_hz_, ready for Recon. Digital/unset modulations are left out
+// of the entry so the loading app keeps its own.
+uint32_t SignalSurveyView::write_blocks_freqman(const std::string& stem) {
+    create_freqman_file(stem);
+
+    FreqmanDB db;
+    if (!db.open(freqman_dir / (stem + ".TXT"), /*create=*/true))
+        return 0;
+
+    // freqman indices are positions in its option lists (see freqman_db.cpp)
+    freqman_index_t step = freqman_invalid_index;
+    for (size_t i = 0; i < freqman_steps.size(); i++)
+        if (freqman_steps[i].second == block_spread_hz_) step = (freqman_index_t)i;
+
+    uint32_t written = 0;
+    for (size_t i = 0; i < block_total_; i++) {
+        const SurveyBlock& b = blocks_[i];
+        freqman_entry e{};
+        e.type = freqman_type::Range;
+        e.frequency_a = b.range_lo;
+        e.frequency_b = b.range_hi;
+        e.step = step;
+        switch (b.mod) {
+            case SurveyMod::AM:
+                e.modulation = 0;                                  // AM
+                e.bandwidth = block_spread_hz_ >= 9'000 ? 0 : 1;  // DSB 9k / DSB 6k
+                break;
+            case SurveyMod::CW:
+                e.modulation = 0;  // AM
+                e.bandwidth = 4;   // CW
+                break;
+            case SurveyMod::NFM:
+                e.modulation = 1;  // NFM: 8k5 / 11k / 12k5 / 16k
+                e.bandwidth = block_spread_hz_ <= 8'500 ? 0 : block_spread_hz_ <= 11'000 ? 1
+                                                          : block_spread_hz_ <= 12'500   ? 2
+                                                                                         : 3;
+                break;
+            case SurveyMod::WFM:
+                e.modulation = 2;  // WFM
+                e.bandwidth = 2;   // 200k
+                break;
+            default:
+                break;
+        }
+        e.description = "B" + to_string_dec_uint(i + 1) + " " + mod_name(b.mod) + " x" +
+                        to_string_dec_uint(b.count) + " p" + to_string_dec_int(b.best_power);
         db.append_entry(e);
         written++;
     }
@@ -561,10 +738,13 @@ uint32_t SignalSurveyView::write_freqman(const std::string& stem, bool unknown_o
 }
 
 void SignalSurveyView::save_results() {
-    uint32_t all = write_freqman("SIGNAL_SURVEY", false);
-    uint32_t unk = write_freqman("SIGNAL_SURVEY_UNK", true);
+    uint32_t all = write_freqman("SIGNAL_SURVEY", ExportFilter::All);
+    uint32_t unk = write_freqman("SIGNAL_SURVEY_UNK", ExportFilter::Unknown);
+    uint32_t fm = write_freqman("SIGNAL_SURVEY_FM", ExportFilter::FM);
+    uint32_t blk = write_blocks_freqman("SIGNAL_SURVEY_BLK");
     text_status_.set("Saved " + to_string_dec_uint(all) + " (" +
-                     to_string_dec_uint(unk) + " unk)");
+                     to_string_dec_uint(unk) + " unk " + to_string_dec_uint(fm) + " FM " +
+                     to_string_dec_uint(blk) + " blk)");
 }
 
 }  // namespace ui::external_app::signal_survey
