@@ -535,15 +535,5 @@ add_custom_target(
 	${PROJECT_NAME}
 	DEPENDS ${PROJECT_NAME}.bin
 )
-# Add jammer source files
-target_sources(app PRIVATE
-    jammer_scanner.cpp
-    ui_jammer_screen.cpp
-    ui_jammer_settings.cpp
-)
 
-# Add include paths
-target_include_directories(app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
 add_dependencies(${PROJECT_NAME} baseband)

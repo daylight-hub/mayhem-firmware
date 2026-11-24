@@ -90,9 +90,6 @@
 #include <locale>
 #include <codecvt>
 
-// Add to navigation menu
-nav_.push<ui::JammerScreen>();
-
 using portapack::receiver_model;
 using portapack::transmitter_model;
 
