@@ -72,7 +72,7 @@ jobs:
           # origins. Set a TILE_REFERER secret to an allowed origin.
           TILE_REFERER: ${{ secrets.TILE_REFERER }}
           OSM_ZMIN: "6"
-          OSM_ZMAX: "11"
+          OSM_ZMAX: "14"
           OSM_BBOX: "-83.7,36.5,-74.9,40.7"
           OSM_DELAY: "0.05"   # polite but quicker than the 0.2s default
         run: |
